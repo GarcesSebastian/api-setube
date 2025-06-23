@@ -13,6 +13,14 @@ import os from "os";
 import path from "path";
 import { PassThrough } from "stream";
 
+interface playlistResponse extends ytpl.result {
+  thumbnail: {
+    url: string,
+    width: number,
+    height: number
+  }
+}
+
 config();
 ffmpeg.setFfmpegPath(ffmpegStatic as unknown as string);
 
@@ -90,6 +98,7 @@ const processUrl = async (url: string): Promise<{ url: string; filename?: string
           reject(err);
         })
         .on("end", () => {
+          console.log(`Video Convertido ${safeTitle}`)
           resolve();
         })
         .save(outPath);
@@ -132,9 +141,11 @@ app.post("/playlist-to-audio", async (req, res) => {
 
   try {
     const idOrUrl = await ytpl.getPlaylistID(raw);
-    const playlist = await ytpl(idOrUrl, { limit: Infinity });
+    const playlist: playlistResponse = await ytpl(idOrUrl, { limit: Infinity }) as unknown as playlistResponse;
     const urls = playlist.items.map((item) => item.url);
-    return res.json({ total: urls.length, urls });
+    const { items, ...info } = playlist
+    console.log(`info Nueva Playlist ${JSON.stringify(info)}`)
+    return res.json({ info, total: urls.length, urls });
   } catch (err: any) {
     return res.status(500).json({ message: "Error al obtener playlist", error: err.message });
   }
@@ -163,6 +174,7 @@ app.post("/convert-to-audio", async (req, res) => {
         res.status(500).json({ message: "Error al convertir audio", error: err.message });
       })
       .on("end", () => {
+        console.log(`Video Convertido ${title}`)
         res.end();
       })
       .pipe(res, { end: true });
@@ -192,6 +204,7 @@ app.post("/convert-to-audio", async (req, res) => {
             reject(err);
           })
           .on("end", () => {
+            console.log(`Video Convertido ${filename}`)
             sendToAllClients({ type: "success", filename });
             resolve();
           })
