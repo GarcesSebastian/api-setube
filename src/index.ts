@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import ffmpeg from "fluent-ffmpeg";
@@ -19,7 +20,7 @@ const ORIGINS = process.env.ORIGIN?.split(",") || [];
 if (!fs.existsSync(PATH_SAVE)) fs.mkdirSync(PATH_SAVE, { recursive: true });
 
 const app = express();
-app.use(cors({ origin: ORIGINS, methods: ["POST"], credentials: true }));
+app.use(cors({ origin: ORIGINS, credentials: true, methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"] }));
 app.use(express.json());
 
 app.get("/events", (req, res) => {

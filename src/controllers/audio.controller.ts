@@ -7,6 +7,7 @@ import { normalizeYouTubeUrl, sanitizeFilename, sendToAllClients } from "../lib/
 import { downloadAudioStream } from "../lib/audio.js";
 import { processUrl } from "../lib/youtube.js";
 import ytpl from "@distube/ytpl";
+import { convertAudio } from "../lib/ffmpeg.js";
 
 export interface playlistResponse extends ytpl.result {
   thumbnail: {
@@ -44,26 +45,8 @@ export const convertToAudio = async (req: any, res: any) => {
       const encodedTitle = encodeURIComponent(title);
       res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodedTitle}`);
 
-      let command = ffmpeg(stream as any)
-        .outputOptions(["-threads", "0"])
-        .format(format);
-
-      if (format === "mp3") {
-        command = command.outputOptions(["-qscale:a", "0"]).audioBitrate(192);
-      }
-
-      return command
-        .on("error", (err) => {
-          console.error("Error en una conversión:", err);
-          if (!res.headersSent) {
-            res.status(500).json({ message: "Error al convertir audio", error: err.message });
-          }
-        })
-        .on("end", () => {
-          console.log(`Video Convertido ${title}`)
-          res.end();
-        })
-        .pipe(res, { end: true });
+      await convertAudio(stream, format, "pipe", { outputStream: res, filename: title });
+      return;
     }
   
     const archive = archiver("zip");
@@ -79,30 +62,16 @@ export const convertToAudio = async (req: any, res: any) => {
         const filename = sanitizeFilename(info.videoDetails.title) + "." + format;
         const pass = new PassThrough();
         archive.append(pass, { name: filename });
-    
-        await new Promise<void>((resolve, reject) => {
-          let command = ffmpeg(stream as any)
-            .outputOptions(["-threads", "0"])
-            .format(format);
 
-          if (format === "mp3") {
-            command = command.outputOptions(["-qscale:a", "0"]).audioBitrate(192);
-          }
-
-          command
-            .on("error", (err) => {
-              console.error("Error en una conversión:", err);
-              reject(err);
-            })
-            .on("end", () => {
-              console.log(`Video Convertido ${filename}`)
-              sendToAllClients({ type: "success", filename });
-              resolve();
-            })
-            .pipe(pass, { end: true });
+        await convertAudio(stream, format, 'pipe', {
+          outputStream: pass,
+          filename: filename,
+          onEndCallback: () => sendToAllClients({ type: "success", filename })
         });
+
       } catch (err: any) {
-        console.error("Error general durante conversión:", err);
+        console.error(`Error procesando ${rawUrl}:`, err);
+        sendToAllClients({ type: "error", message: `Falló la conversión de ${rawUrl}` });
       }
     }));
     
