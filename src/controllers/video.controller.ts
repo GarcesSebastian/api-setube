@@ -9,8 +9,11 @@ import { PATH_SAVE, CONCURRENCY } from "../config.js";
 import archiver from "archiver";
 import pLimit from "p-limit";
 import { PassThrough } from "stream";
+import { AgentManager } from "../managers/agent.manager.js";
 
 export type formats = "mp4" | "webm";
+
+const agentManager = AgentManager.getInstance();
 
 const cookieJar = [
   { name: 'CONSENT', value: 'YES+cb.20210328-17-p0.en+FX+030', domain: '.youtube.com', path: '/' },
@@ -48,7 +51,7 @@ export const infoVideo = async (req: any, res: any) => {
     const urlNoNormalize = normalizeYouTubeUrl(url);
     
     try {
-      const { videoDetails, formats } = await ytdl.getInfo(urlNoNormalize || url, { requestOptions: { headers: browserHeaders } });
+      const { videoDetails, formats } = await ytdl.getInfo(urlNoNormalize || url, { requestOptions: { headers: browserHeaders }, agent: agentManager.getAgent() });
       const { title, description, thumbnails } = videoDetails;
   
       const qualities = [...new Set(formats
