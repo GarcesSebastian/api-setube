@@ -5,6 +5,6 @@ const router = Router();
 
 router.get("/info", infoVideo);
 router.post("/download", downloadVideo);
-router.get("/convert", convertToVideo);
+router.post("/convert", convertToVideo);
 
 export { router };  
