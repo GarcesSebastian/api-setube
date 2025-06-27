@@ -3,7 +3,7 @@ import { convertToVideo, infoVideo, downloadVideo } from "../controllers/video.c
 
 const router = Router();
 
-router.get("/info", infoVideo);
+router.post("/info", infoVideo);
 router.post("/download", downloadVideo);
 router.post("/convert", convertToVideo);
 

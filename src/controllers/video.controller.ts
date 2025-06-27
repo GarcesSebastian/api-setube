@@ -1,13 +1,37 @@
-import { normalizeYouTubeUrl, sanitizeFilename } from "../lib/utils.js";
+import { normalizeYouTubeUrl, sanitizeFilename, sendToAllClients } from "../lib/utils.js";
 import ytdl from "@distube/ytdl-core";
 import { downloadVideoStream, VideoQuality } from "../lib/video.js";
 import { spawn } from 'child_process';
 import ffmpegPath from 'ffmpeg-static';
 import path from "path";
 import fs from "fs";
-import { PATH_SAVE } from "../config.js";
+import { PATH_SAVE, CONCURRENCY } from "../config.js";
+import archiver from "archiver";
+import pLimit from "p-limit";
+import { PassThrough } from "stream";
 
 export type formats = "mp4" | "webm";
+
+const cookieJar = [
+  { name: 'CONSENT', value: 'YES+cb.20210328-17-p0.en+FX+030', domain: '.youtube.com', path: '/' },
+  { name: 'VISITOR_INFO1_LIVE', value: 'y4VIyEZEHSw', domain: '.youtube.com', path: '/' },
+  { name: 'PREF', value: 'f4=4000000&f6=40000000&tz=America.Mexico_City', domain: '.youtube.com', path: '/' }
+];
+
+const browserHeaders = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9,es-MX;q=0.8,es;q=0.7',
+  'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+  'Sec-Ch-Ua-Mobile': '?0',
+  'Sec-Ch-Ua-Platform': '"Windows"',
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'none',
+  'Upgrade-Insecure-Requests': '1',
+  'X-Youtube-Client-Name': '1',
+  'X-Youtube-Client-Version': '2.20231208.00.00'
+};
 
 export const infoVideo = async (req: any, res: any) => {
   const urls: string[] = req.body.urls;
@@ -15,23 +39,34 @@ export const infoVideo = async (req: any, res: any) => {
     return res.status(400).json({ message: "Falta arreglo de URLs" });
   }
 
+  console.log(`Petición recibida - URLs: ${urls}`);
+
   const format = req.body.format || "mp4";
   const infoUrls: { url: string; title: string; description: string | null; thumbnail: { url: string, width: number, height: number }; qualities: string[] }[] = [];
   
-  await Promise.all(urls.map(async url => {
+  const response = await Promise.all(urls.map(async url => {
     const urlNoNormalize = normalizeYouTubeUrl(url);
-    const { videoDetails, formats } = await ytdl.getInfo(urlNoNormalize || url);
-    const { title, description, thumbnail } = videoDetails;
-
-    const qualities = [...new Set(formats
-      .filter(f => f.qualityLabel && f.container === 'mp4' && !f.hasAudio)
-      .map(f => f.qualityLabel)
-      .sort((a, b) => parseInt(b) - parseInt(a))
-    )];
-
-    infoUrls.push({ url: urlNoNormalize || url, title, description, thumbnail: thumbnail.thumbnails[thumbnail.thumbnails.length - 1], qualities });
+    
+    try {
+      const { videoDetails, formats } = await ytdl.getInfo(urlNoNormalize || url, { requestOptions: { headers: browserHeaders } });
+      const { title, description, thumbnails } = videoDetails;
+  
+      const qualities = [...new Set(formats
+        .filter(f => f.qualityLabel && f.container === 'mp4' && !f.hasAudio)
+        .map(f => f.qualityLabel)
+        .sort((a, b) => parseInt(b) - parseInt(a))
+      )];
+  
+      const bestThumbnail = thumbnails[thumbnails.length - 1];
+      infoUrls.push({ url: urlNoNormalize || url, title, description, thumbnail: bestThumbnail, qualities });
+    }
+    catch(error: any){
+      console.error(`Error al obtener información para ${url}:`, error);
+      return { error: "Error al obtener información" };
+    }
   }));
 
+  if(response.some((item) => item?.error)) return res.status(500).json({ error: response.filter((item) => item?.error).map((item) => item?.error)[0] });
   return res.json({ format, urls: infoUrls });
 }
 
@@ -112,69 +147,35 @@ export const downloadVideo = async (req: any, res: any) => {
   }
 }
 
-// Configuró cookieJar para evadir restricciones de YouTube
-const cookieJar = [
-  // Cookies e SAPISID que ayuda a pasar las restricciones de YouTube
-  { name: 'CONSENT', value: 'YES+cb.20210328-17-p0.en+FX+030', domain: '.youtube.com', path: '/' },
-  { name: 'VISITOR_INFO1_LIVE', value: 'y4VIyEZEHSw', domain: '.youtube.com', path: '/' },
-  // Cookie que indica preferencias de edad
-  { name: 'PREF', value: 'f4=4000000&f6=40000000&tz=America.Mexico_City', domain: '.youtube.com', path: '/' }
-];
-
-// Headers con valores reales de navegador
-const browserHeaders = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-  'Accept-Language': 'en-US,en;q=0.9,es-MX;q=0.8,es;q=0.7',
-  'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-  'Sec-Ch-Ua-Mobile': '?0',
-  'Sec-Ch-Ua-Platform': '"Windows"',
-  'Sec-Fetch-Dest': 'document',
-  'Sec-Fetch-Mode': 'navigate',
-  'Sec-Fetch-Site': 'none',
-  'Upgrade-Insecure-Requests': '1',
-  'X-Youtube-Client-Name': '1',
-  'X-Youtube-Client-Version': '2.20231208.00.00'
-};
-
 export const convertToVideo = async (req: any, res: any) => {
   const urls: string[] = req.body.urls;
-  if (!urls || !Array.isArray(urls) || urls.length !== 1) {
-    return res.status(400).json({ message: "Por favor, proporciona una única URL en el arreglo 'urls'." });
+  if (!urls || !Array.isArray(urls) || urls.length === 0) {
+    return res.status(400).json({ message: "Falta arreglo de URLs" });
   }
 
   const format: formats = req.body.format ?? "mp4";
   const quality: string = req.body.quality ?? 'highest';
-  console.log(`Petición recibida - Formato: ${format}, Calidad: ${quality}, body: ${JSON.stringify(req.body)}`);
+  console.log(`Petición recibida - Formato: ${format}, Calidad: ${quality}, URLs: ${urls.length}, body: ${JSON.stringify(req.body)}`);
 
-  let info: ytdl.videoInfo | null = null;
-  try {
-    // Normalizar URL para asegurarnos de que está en un formato estándar que YouTube acepta
-    const url = normalizeYouTubeUrl(urls[0]) || urls[0];
+  const processVideo = async (url: string, outputStream: NodeJS.WritableStream, filename?: string) => {
+    const normalizedUrl = normalizeYouTubeUrl(url) || url;
     
-    // Preparamos las opciones para las solicitudes a YouTube
     const requestOptions = {
       headers: browserHeaders
     };
     
-    // ytdl-core espera un objeto especial para cookies
     const ytdlOptions = {
       requestOptions: requestOptions
     };
     
-    // Si estamos en producción, agregamos un log para saber qué opciones estamos usando
-    console.log('Intentando obtener información del video con headers personalizados');
+    console.log(`Descargando información para ${normalizedUrl}`);
     
-    // Obtener la información del video
-    info = await ytdl.getInfo(url, ytdlOptions);
+    const info = await ytdl.getInfo(normalizedUrl, ytdlOptions);
+    const videoTitle = filename || sanitizeFilename(info.videoDetails.title);
     
-    // Si llegamos aquí, la información se obtuvo correctamente
-    const title = sanitizeFilename(info.videoDetails.title);
-    const encodedTitle = encodeURIComponent(title);
-
     const targetVideoFormat = ytdl.chooseFormat(info.formats, { quality, filter: 'videoonly' });
     
-    console.log(`Calidad de video para FFmpeg seleccionada: ${targetVideoFormat.qualityLabel}`);
+    console.log(`Calidad de video seleccionada para ${videoTitle}: ${targetVideoFormat.qualityLabel}`);
 
     let audioFormat = ytdl.chooseFormat(info.formats, { filter: f => f.audioCodec === 'mp4a.40.2' });
     let useCopyForAudio = !!audioFormat;
@@ -184,28 +185,22 @@ export const convertToVideo = async (req: any, res: any) => {
     }
 
     if (!audioFormat) {
-        throw new Error('No se encontró un stream de audio compatible.');
+        throw new Error(`No se encontró un stream de audio compatible para ${videoTitle}.`);
     }
-
-    // Aplicamos las mismas opciones de headers para las descargas
-    console.log('Aplicando headers personalizados a la descarga de streams');
     
     const videoStream = ytdl.downloadFromInfo(info, { 
       format: targetVideoFormat,
-      requestOptions: requestOptions // Mismos headers que usamos para getInfo
+      requestOptions: requestOptions
     });
     
     const audioStream = ytdl.downloadFromInfo(info, { 
       format: audioFormat,
-      requestOptions: requestOptions // Mismos headers que usamos para getInfo
+      requestOptions: requestOptions
     });
-
-    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
-    res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodedTitle}.${format}`);
 
     const ffmpegArgs = [
         '-loglevel', 'error',
-        '-threads', '4',
+        '-threads', '0',
         '-thread_queue_size', '4096',
         '-i', 'pipe:3',
         '-i', 'pipe:4',
@@ -216,10 +211,10 @@ export const convertToVideo = async (req: any, res: any) => {
     ];
 
     if (useCopyForAudio) {
-        console.log(`NIVEL 2 (VÍA SEMI-RÁPIDA): Uniendo con copia directa de audio (${audioFormat.mimeType}).`);
+        console.log(`NIVEL 2 (VÍA SEMI-RÁPIDA): Uniendo con copia directa de audio para ${videoTitle}.`);
         ffmpegArgs.push('-c:a', 'copy');
     } else {
-        console.log(`NIVEL 3 (VÍA DE CALIDAD): Re-codificando audio desde ${audioFormat.mimeType} a AAC de alta calidad.`);
+        console.log(`NIVEL 3 (VÍA DE CALIDAD): Re-codificando audio para ${videoTitle}.`);
         ffmpegArgs.push('-c:a', 'aac', '-b:a', '192k');
     }
 
@@ -229,50 +224,136 @@ export const convertToVideo = async (req: any, res: any) => {
     }
     ffmpegArgs.push('pipe:1');
 
-    const ffmpegProcess = spawn(ffmpegPath as unknown as string, ffmpegArgs, {
-        stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
+    return new Promise<void>((resolve, reject) => {
+      const ffmpegProcess = spawn(ffmpegPath as unknown as string, ffmpegArgs, {
+          stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
+      });
+
+      if(ffmpegProcess.stdio[3]) videoStream.pipe(ffmpegProcess.stdio[3] as any);
+      if(ffmpegProcess.stdio[4]) audioStream.pipe(ffmpegProcess.stdio[4] as any);
+      if(ffmpegProcess.stdout) ffmpegProcess.stdout.pipe(outputStream);
+
+      ffmpegProcess.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`FFmpeg exited with code ${code} para ${videoTitle}`));
+        }
+      });
+
+      ffmpegProcess.on('error', (err) => {
+        console.error(`FFmpeg process error para ${videoTitle}:`, err);
+        reject(err);
+      });
+
+      if(ffmpegProcess.stderr) {
+        ffmpegProcess.stderr.on('data', (data) => {
+          console.error(`FFmpeg stderr para ${videoTitle}: ${data}`);
+        });
+      }
+    });
+  };
+
+  try {
+    if (urls.length === 1) {
+      const url = urls[0];
+      const info = await ytdl.getInfo(normalizeYouTubeUrl(url) || url, { requestOptions: { headers: browserHeaders } });
+      const title = sanitizeFilename(info.videoDetails.title);
+      const encodedTitle = encodeURIComponent(title);
+      
+      res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+      res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodedTitle}.${format}`);
+      
+      await processVideo(url, res);
+      return;
+    }
+    
+    const archive = archiver("zip", {
+      zlib: { level: 1 }
+    });
+    
+    archive.on('error', (err) => {
+      console.error('Error en el archiver:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: `Error al crear el archivo ZIP: ${err.message}` });
+      }
+    });
+    
+    archive.on('warning', (err) => {
+      if (err.code === 'ENOENT') {
+        console.warn('Advertencia del archiver (archivo no encontrado):', err);
+      } else {
+        console.error('Advertencia crítica del archiver:', err);
+      }
     });
 
-    if(ffmpegProcess.stdio[3]) videoStream.pipe(ffmpegProcess.stdio[3] as any);
-    if(ffmpegProcess.stdio[4]) audioStream.pipe(ffmpegProcess.stdio[4] as any);
-    if(ffmpegProcess.stdout) ffmpegProcess.stdout.pipe(res);
-
-    ffmpegProcess.on('error', (err) => console.error('FFmpeg process error:', err));
-    if(ffmpegProcess.stderr) ffmpegProcess.stderr.on('data', (data) => console.error(`FFmpeg stderr: ${data}`));
-    req.on('close', () => ffmpegProcess.kill('SIGKILL'));
-
+    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+    res.attachment(`videos-${format}-${Date.now()}.zip`);
+    archive.pipe(res);
+    
+    const operationTimeout = setTimeout(() => {
+      console.error('Timeout global de la operación de conversión');
+      if (!res.headersSent) {
+        res.status(408).json({ error: 'La operación ha tomado demasiado tiempo y ha sido cancelada' });
+      }
+    }, 20 * 60 * 1000);
+    
+    const limit = pLimit(2);
+    const results: { success: boolean, url: string, filename?: string, error?: string }[] = [];
+    
+    try {
+      for (const url of urls) {
+        try {
+          const normalizedUrl = normalizeYouTubeUrl(url) || url;
+          console.log(`Iniciando procesamiento para ${normalizedUrl}`);
+          
+          const videoPromise = (async () => {
+            const info = await ytdl.getInfo(normalizedUrl, { requestOptions: { headers: browserHeaders } });
+            const filename = sanitizeFilename(info.videoDetails.title) + "." + format;
+            const pass = new PassThrough();
+            
+            archive.append(pass, { name: filename });
+            
+            await processVideo(url, pass, filename);
+            console.log(`Video procesado exitosamente: ${filename}`);
+            sendToAllClients({ type: "success", filename });
+            results.push({ success: true, url, filename });
+          })();
+          
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error(`Timeout procesando ${url}`)), 10 * 60 * 1000);
+          });
+          
+          await Promise.race([videoPromise, timeoutPromise]);
+          
+        } catch (err: any) {
+          console.error(`Error procesando video ${url}:`, err);
+          sendToAllClients({ type: "error", message: `Falló la conversión de ${url}` });
+          results.push({ success: false, url, error: err.message });
+        }
+      }
+      
+      console.log('Finalizando archivo ZIP...');
+      await archive.finalize();
+      console.log('ZIP finalizado con éxito');
+      
+    } catch (err: any) {
+      console.error(`Error en el procesamiento general:`, err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: `Error al procesar los videos: ${err.message}`, results });
+      }
+    } finally {
+      clearTimeout(operationTimeout);
+    }
+    
   } catch (err: any) {
     console.error(`Error en el proceso de conversión: ${err.message}`);
     if (!res.headersSent) {
-        let response: { error: string, availableQualities?: string[] } = {
-            error: `Ocurrió un error al procesar el video.`
-        };
-        
-        if (info) {
-            try {
-                const problematicFormat = info.formats.find(f => f.qualityLabel === quality);
-                console.log('--- DEBUG: INFORMACIÓN DEL FORMATO PROBLEMÁTICO ---');
-                console.log(problematicFormat);
-                console.log('----------------------------------------------------');
-            } catch (debugErr) {
-                console.log('Error durante el bloque de diagnóstico:', debugErr);
-            }
-
-            const availableQualities = [...new Set(
-                info.formats
-                    .map(f => f.qualityLabel)
-                    .filter(q => q)
-            )].sort((a, b) => parseInt(b.replace('p', '')) - parseInt(a.replace('p', '')));
-            
-            response = {
-              error: `La calidad solicitada '${quality}' no está disponible para este video.`,
-              availableQualities: availableQualities
-            };
-        } else {
-            response.error = `No se pudo obtener la información del video. La URL podría ser inválida o el video no estar disponible.`;
-        }
-        
-        res.status(400).json(response);
+        res.status(500).json({
+          error: `Ocurrió un error al procesar los videos: ${err.message}`
+        });
+    } else {
+        console.error('Error ocurrido después de enviar headers, no se puede enviar respuesta JSON');
     }
   }
 };
