@@ -112,6 +112,31 @@ export const downloadVideo = async (req: any, res: any) => {
   }
 }
 
+// Configuró cookieJar para evadir restricciones de YouTube
+const cookieJar = [
+  // Cookies e SAPISID que ayuda a pasar las restricciones de YouTube
+  { name: 'CONSENT', value: 'YES+cb.20210328-17-p0.en+FX+030', domain: '.youtube.com', path: '/' },
+  { name: 'VISITOR_INFO1_LIVE', value: 'y4VIyEZEHSw', domain: '.youtube.com', path: '/' },
+  // Cookie que indica preferencias de edad
+  { name: 'PREF', value: 'f4=4000000&f6=40000000&tz=America.Mexico_City', domain: '.youtube.com', path: '/' }
+];
+
+// Headers con valores reales de navegador
+const browserHeaders = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9,es-MX;q=0.8,es;q=0.7',
+  'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+  'Sec-Ch-Ua-Mobile': '?0',
+  'Sec-Ch-Ua-Platform': '"Windows"',
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'none',
+  'Upgrade-Insecure-Requests': '1',
+  'X-Youtube-Client-Name': '1',
+  'X-Youtube-Client-Version': '2.20231208.00.00'
+};
+
 export const convertToVideo = async (req: any, res: any) => {
   const urls: string[] = req.body.urls;
   if (!urls || !Array.isArray(urls) || urls.length !== 1) {
@@ -124,8 +149,26 @@ export const convertToVideo = async (req: any, res: any) => {
 
   let info: ytdl.videoInfo | null = null;
   try {
+    // Normalizar URL para asegurarnos de que está en un formato estándar que YouTube acepta
     const url = normalizeYouTubeUrl(urls[0]) || urls[0];
-    info = await ytdl.getInfo(url);
+    
+    // Preparamos las opciones para las solicitudes a YouTube
+    const requestOptions = {
+      headers: browserHeaders
+    };
+    
+    // ytdl-core espera un objeto especial para cookies
+    const ytdlOptions = {
+      requestOptions: requestOptions
+    };
+    
+    // Si estamos en producción, agregamos un log para saber qué opciones estamos usando
+    console.log('Intentando obtener información del video con headers personalizados');
+    
+    // Obtener la información del video
+    info = await ytdl.getInfo(url, ytdlOptions);
+    
+    // Si llegamos aquí, la información se obtuvo correctamente
     const title = sanitizeFilename(info.videoDetails.title);
     const encodedTitle = encodeURIComponent(title);
 
@@ -144,8 +187,18 @@ export const convertToVideo = async (req: any, res: any) => {
         throw new Error('No se encontró un stream de audio compatible.');
     }
 
-    const videoStream = ytdl.downloadFromInfo(info, { format: targetVideoFormat });
-    const audioStream = ytdl.downloadFromInfo(info, { format: audioFormat });
+    // Aplicamos las mismas opciones de headers para las descargas
+    console.log('Aplicando headers personalizados a la descarga de streams');
+    
+    const videoStream = ytdl.downloadFromInfo(info, { 
+      format: targetVideoFormat,
+      requestOptions: requestOptions // Mismos headers que usamos para getInfo
+    });
+    
+    const audioStream = ytdl.downloadFromInfo(info, { 
+      format: audioFormat,
+      requestOptions: requestOptions // Mismos headers que usamos para getInfo
+    });
 
     res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
     res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodedTitle}.${format}`);
