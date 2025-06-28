@@ -7,21 +7,6 @@ export type VideoQuality = '1080p' | '720p' | '480p' | '360p' | 'highest';
 
 const agentManager = AgentManager.getInstance();
 
-// Sistema de caché para reducir solicitudes repetidas a YouTube
-type VideoCache = {
-  timestamp: number;
-  data: any;
-};
-
-const videoCache = new Map<string, VideoCache>();
-const CACHE_TTL = 3600000; // 1 hora en milisegundos
-
-// Función para controlar retrasos entre solicitudes (anti rate-limiting)
-const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
-
-// Contador para rotar agentes y cookies de forma más efectiva
-let requestCounter = 0;
-
 
 // Colección de User-Agents para rotación y evasión de restricciones
 const userAgents = [
@@ -76,14 +61,12 @@ const getRotatingHeaders = (index = -1): Record<string, string> => {
   };
 };
 
-// Función para obtener cookies con rotación
 const getRotatingCookies = (index = -1): Record<string, string> => {
     // Si no se especifica un índice, elegir uno aleatorio
   const cookieIndex = index >= 0 ? index % cookieCollections.length : Math.floor(Math.random() * cookieCollections.length);
   return cookieCollections[cookieIndex];
 };
 
-// Configuraciones para los diferentes intentos en caso de fallo
 const youtubeConfigs = [
     // Configuración estándar con web
   { client_type: 'WEB', retriever: 'WEB', agent_index: 0, cookie_index: 0 },
@@ -180,49 +163,8 @@ const extractVideoID = (url: string): string => {
   }
 };
 
-// Verifica si hay una entrada en caché válida para esta URL
-const getFromCache = (url: string): any | null => {
-  const cacheItem = videoCache.get(url);
-  if (cacheItem && (Date.now() - cacheItem.timestamp) < CACHE_TTL) {
-    console.log(`Usando información en caché para URL: ${url}`);
-    return cacheItem.data;
-  }
-  return null;
-};
-
-// Guarda información en caché
-const saveToCache = (url: string, data: any): void => {
-  videoCache.set(url, {
-    timestamp: Date.now(),
-    data
-  });
-  // Limitar tamaño de caché
-  if (videoCache.size > 100) {
-    const oldestKey = [...videoCache.keys()]
-      .reduce((oldest, key) => {
-        const item = videoCache.get(key)!;
-        const oldestItem = videoCache.get(oldest)!;
-        return item.timestamp < oldestItem.timestamp ? key : oldest;
-      });
-    videoCache.delete(oldestKey);
-  }
-};
-
-// Utiliza un retraso incremental basado en el contador de solicitudes
-const getRequestDelay = (): number => {
-  // Retraso base de 500ms + incremento basado en número de solicitudes
-  // Máximo 3 segundos
-  return Math.min(500 + Math.floor(requestCounter / 10) * 100, 3000);
-};
-
 export const getVideoInfo = async (url: string): Promise<any> => {
   try {
-    // Incrementar contador de solicitudes
-    requestCounter++;
-    
-    // Verificar caché primero
-    const cachedData = getFromCache(url);
-    if (cachedData) return cachedData;
         // Intentar reparar URLs truncadas
     const fixedUrl = attemptToFixYouTubeUrl(url);
     
@@ -244,11 +186,6 @@ export const getVideoInfo = async (url: string): Promise<any> => {
         // Sistema de reintentos con diferentes configuraciones
     let lastError = null;
     let videoInfo = null;
-    
-    // Aplicar un pequeño retraso antes de las solicitudes para evitar detección
-    const delay = getRequestDelay();
-    console.log(`Aplicando retraso de ${delay}ms antes de la solicitud...`);
-    await sleep(delay);
     
     for (const config of youtubeConfigs) {
       try {
@@ -294,13 +231,9 @@ export const getVideoInfo = async (url: string): Promise<any> => {
           throw new Error('Respuesta incompleta de youtubei.js');
         }
         
-        if (video.basic_info && video.basic_info.title) {
-          videoInfo = video;
-          console.log(`Información obtenida exitosamente con configuración: ${JSON.stringify(config)}`);
-          break;
-        } else {
-          console.warn('La respuesta no contiene información básica completa, intentando otra configuración');
-        }
+        videoInfo = video;
+        console.log(`Información obtenida exitosamente con configuración: ${JSON.stringify(config)}`);
+        break;
       } catch (err: any) {
         lastError = err;
         console.error(`Intento fallido con configuración ${JSON.stringify(config)}: ${err.message || 'Error desconocido'}`);
@@ -314,42 +247,32 @@ export const getVideoInfo = async (url: string): Promise<any> => {
     }
 
         // Formatear la respuesta
-    try {
-      const { basic_info, streaming_data } = videoInfo;
-      const { title, short_description, thumbnail } = basic_info;
-      
-          // Extraer calidades de video disponibles
-      const formats = [
-        ...new Set(streaming_data?.formats?.map(f => f.quality_label) || []), 
-        ...new Set(streaming_data?.adaptive_formats?.map(f => f.quality_label) || [])
-      ].filter((f) => f !== undefined && f !== null).sort((a, b) => {
-              // Ordenar por resolución, maneja formato "NNNp"
-        const numA = parseInt(a.replace(/[^0-9]/g, ''));
-        const numB = parseInt(b.replace(/[^0-9]/g, ''));
-        return numB - numA;
-      });
-      
-          // Obtener la mejor miniatura disponible
-      const thumbnailCurrent = thumbnail?.sort((a, b) => b.width - a.width)[0];
+    const { basic_info, streaming_data } = videoInfo;
+    const { title, short_description, thumbnail } = basic_info;
+    
+        // Extraer calidades de video disponibles
+    const formats = [
+      ...new Set(streaming_data?.formats?.map(f => f.quality_label) || []), 
+      ...new Set(streaming_data?.adaptive_formats?.map(f => f.quality_label) || [])
+    ].filter((f) => f !== undefined && f !== null).sort((a, b) => {
+            // Ordenar por resolución, maneja formato "NNNp"
+      const numA = parseInt(a.replace(/[^0-9]/g, ''));
+      const numB = parseInt(b.replace(/[^0-9]/g, ''));
+      return numB - numA;
+    });
+    
+        // Obtener la mejor miniatura disponible
+    const thumbnailCurrent = thumbnail?.sort((a, b) => b.width - a.width)[0];
 
-      const payload = {
-        url,
-        title,
-        description: short_description || null,
-        thumbnail: thumbnailCurrent,
-        qualities: formats.length > 0 ? formats : ['720p', '480p', '360p'], // Calidades por defecto si no se detectan
-        source: 'innertube'
-      };
+    const payload = {
+      url,
+      title,
+      description: short_description || null,
+      thumbnail: thumbnailCurrent,
+      qualities: formats.length > 0 ? formats : ['720p', '480p', '360p'] // Calidades por defecto si no se detectan
+    };
 
-      // Guardar en caché
-      saveToCache(url, payload);
-      
-      return payload;
-    } catch (formatError) {
-      console.error('Error al formatear datos de Innertube:', formatError instanceof Error ? formatError.message : 'Error desconocido');
-      // Si hay error al formatear, continuar con el fallback
-      throw new Error('Error procesando datos de Innertube');
-    }
+    return payload;
   } catch (error: any) {
     console.error(`Error al obtener información del video con youtubei.js: ${error.message}`);
     
@@ -358,21 +281,11 @@ export const getVideoInfo = async (url: string): Promise<any> => {
             // Intentar con diferentes User-Agents si youtubei.js falla
       console.log(`Intentando método fallback con ytdl-core para URL: ${url}`);
       
-            // Aplicar retraso antes de usar ytdl-core para evitar detección
-      const fallbackDelay = getRequestDelay() * 1.5; // Retraso más largo para el fallback
-      console.log(`Aplicando retraso de ${fallbackDelay}ms antes del fallback...`);
-      await sleep(fallbackDelay);
-      
-      // Intentar con varios User-Agents
+            // Intentar con varios User-Agents
       let ytdlError;
       let videoDetails, formats;
       
-      // Usar un índice rotativo basado en contador global para alternar agentes
-      const startIndex = requestCounter % userAgents.length;
-      
-      for (let attempt = 0; attempt < userAgents.length; attempt++) {
-        // Rotar índices para no usar siempre el mismo orden
-        const i = (startIndex + attempt) % userAgents.length;
+      for (let i = 0; i < userAgents.length; i++) {
         try {
           const headers = getRotatingHeaders(i);
           console.log(`Intento ytdl-core ${i+1}/${userAgents.length} con User-Agent: ${headers['User-Agent'].substring(0, 20)}...`);
@@ -417,7 +330,7 @@ export const getVideoInfo = async (url: string): Promise<any> => {
       )];
   
       const bestThumbnail = thumbnails[thumbnails.length - 1];
-      const payload = { 
+      return { 
         url, 
         title, 
         description, 
@@ -425,11 +338,6 @@ export const getVideoInfo = async (url: string): Promise<any> => {
         qualities,
         source: 'ytdl-fallback' 
       };
-      
-      // Guardar en caché
-      saveToCache(url, payload);
-      
-      return payload;
     } catch (ytdlError: any) {
       console.error(`También falló el fallback con ytdl-core: ${ytdlError.message || 'Error desconocido'}`);
       throw new Error(`No se pudo obtener la información del video: ${error.message || 'Error desconocido'}`);
