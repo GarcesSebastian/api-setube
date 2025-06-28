@@ -29,6 +29,10 @@ app.get("/events", (req, res) => {
     eventsController(req, res, clientsManager);
 });
 
+app.get("/", (req, res) => {
+    res.json({ message: "Bienvenido al servidor", author: "Sebxstt", version: "1.0.0" });
+});
+
 app.use("/audio", audioRouter);
 app.use("/video", videoRouter);
 
