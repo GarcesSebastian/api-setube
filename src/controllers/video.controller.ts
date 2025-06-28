@@ -52,9 +52,6 @@ export const infoVideo = async (req: any, res: any) => {
 
     try {
       const info = await getVideoInfo(urlNoNormalize || url);
-      console.log("Informacion recuperada");
-      console.log(info);
-      console.log("\n");
       infoUrls.push(info);
     }
     catch(error: any){
