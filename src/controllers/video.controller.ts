@@ -1,11 +1,11 @@
 import { normalizeYouTubeUrl, sanitizeFilename, sendToAllClients } from "../lib/utils.js";
 import ytdl from "@distube/ytdl-core";
-import { downloadVideoStream, VideoQuality } from "../lib/video.js";
+import { downloadVideoStream, VideoQuality, getVideoInfo } from "../lib/video.js";
 import { spawn } from 'child_process';
 import ffmpegPath from 'ffmpeg-static';
 import path from "path";
 import fs from "fs";
-import { PATH_SAVE, CONCURRENCY } from "../config.js";
+import { PATH_SAVE } from "../config.js";
 import archiver from "archiver";
 import pLimit from "p-limit";
 import { PassThrough } from "stream";
@@ -49,19 +49,13 @@ export const infoVideo = async (req: any, res: any) => {
   
   const response = await Promise.all(urls.map(async url => {
     const urlNoNormalize = normalizeYouTubeUrl(url);
-    
+
     try {
-      const { videoDetails, formats } = await ytdl.getInfo(urlNoNormalize || url, { requestOptions: { headers: browserHeaders }, agent: agentManager.getAgent() });
-      const { title, description, thumbnails } = videoDetails;
-  
-      const qualities = [...new Set(formats
-        .filter(f => f.qualityLabel && f.container === 'mp4' && !f.hasAudio)
-        .map(f => f.qualityLabel)
-        .sort((a, b) => parseInt(b) - parseInt(a))
-      )];
-  
-      const bestThumbnail = thumbnails[thumbnails.length - 1];
-      infoUrls.push({ url: urlNoNormalize || url, title, description, thumbnail: bestThumbnail, qualities });
+      const info = await getVideoInfo(urlNoNormalize || url);
+      console.log("Informacion recuperada");
+      console.log(info);
+      console.log("\n");
+      infoUrls.push(info);
     }
     catch(error: any){
       console.error(`Error al obtener información para ${url}:`, error);

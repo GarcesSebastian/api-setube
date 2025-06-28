@@ -24,6 +24,7 @@
     "fluent-ffmpeg": "^2.1.3",
     "p-limit": "^6.2.0",
     "uuid": "^11.1.0",
+    "youtubei.js": "^14.0.0",
     "yt-dlp-wrap": "^2.3.12",
     "ytpl": "^2.3.0"
   },
